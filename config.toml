@@ -1,6 +1,0 @@
-[runner]
-# Explicitly disabled after a bare ternary expression (a common pattern in
-# conditional st.success()/st.warning() lines) got auto-wrapped in st.write()
-# and dumped raw DeltaGenerator object reprs onto the page. Nothing in this
-# app relies on magic auto-display -- every output is an explicit st.* call.
-magicEnabled = false
