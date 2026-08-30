@@ -193,3 +193,40 @@ next screenshot is self-diagnosing instead of requiring back-and-forth:
 No behavior changed elsewhere. Verified: app boots cleanly with no
 duplicate-widget-ID conflicts, all 12 regression tests still pass
 (engine.py untouched).
+
+## v1.2.4 (reduce peak memory during Run — suspected crash-on-large-batch)
+
+After the stale-session issue was resolved (fresh tab, files re-selected),
+clicking "Run Monthly Reconciliation" on a real batch of 32 POS files plus
+the full bank statement appeared to crash the server process itself — the
+debug panel showed a brand-new "Server boot id" with boot time identical to
+the render time, meaning the container had just restarted right as the page
+reloaded. That pattern is consistent with the platform killing and
+restarting the process (commonly caused by exceeding a memory limit),
+though it wasn't possible to confirm against Render's logs directly in this
+session.
+
+Without access to confirm the exact cause, fixed the clearest contributor
+regardless: `parse_pos_excel()` and `parse_bank_excel()` were each reading
+every file's sheet TWICE — once fully into a header-less DataFrame just to
+locate which row the real header was on, then again properly with that
+header row. For a bulk run (a POS file per day of the month, dozens at
+once, plus a multi-thousand-row bank statement) that roughly doubled peak
+memory for no benefit. Replaced the header-locating pass with
+`_find_header_row()`, which uses openpyxl's `read_only=True` streaming mode
+to scan only the first 15-30 rows without materializing a full pandas
+DataFrame, then reads each sheet in full exactly once. Also added an
+explicit `del df` after each POS sheet is consumed so it doesn't stay
+referenced while the next file is parsed.
+
+This does not by itself confirm or rule out an OOM as the root cause of the
+crash -- it's a safe, clearly-beneficial change independent of that
+question. Confirming the actual cause still requires checking Render's
+Logs tab around the crash timestamp (looking for a memory/OOM message or
+exit code 137) and/or checking the instance's RAM plan, which is worth
+doing when access allows.
+
+Verified: reprocessed the real bank statement + POS export + terminal
+master through the changed functions and got byte-identical reconciliation
+output (734 recon rows, same status breakdown) to before the change, all
+12 regression tests still pass, app boots cleanly.

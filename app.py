@@ -7,7 +7,7 @@ import streamlit as st
 from engine import (parse_pos_excel, parse_bank_excel, parse_terminal_master, reconcile,
                      MasterFileError, DEFAULT_MAX_DATE_SHIFT, MAX_ALLOWED_DATE_SHIFT)
 
-APP_VERSION = "v1.2.3"
+APP_VERSION = "v1.2.4"
 MATCHED_STATUSES = ["Matched", "Late Settlement / Date Shift Match"]
 
 

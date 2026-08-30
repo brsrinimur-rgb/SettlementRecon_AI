@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Iterable
 import pandas as pd
+import openpyxl
 
 BANK_HEADER = 'Trans: Date'
 
@@ -29,6 +30,29 @@ def _amount(v):
         return 0.0
 
 
+def _find_header_row(file_bytes: bytes, sheet_name, required_values, max_scan_rows: int):
+    """Cheaply scans only the first max_scan_rows of a sheet for the header row,
+    using openpyxl's read_only streaming mode -- avoids loading the whole sheet
+    into a pandas DataFrame just to locate a header a few rows down. On files
+    processed in bulk (a POS file per day of the month, dozens at once) the old
+    double-full-read approach roughly doubled peak memory for no benefit."""
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    try:
+        ws = wb[sheet_name] if sheet_name is not None else wb.worksheets[0]
+        for i, row in enumerate(ws.iter_rows(max_row=max_scan_rows, values_only=True)):
+            vals = [str(v).strip() if v is not None else '' for v in row]
+            if isinstance(required_values, (list, tuple)) and len(required_values) > 1:
+                if all(v in vals for v in required_values):
+                    return i
+            else:
+                target = required_values[0] if isinstance(required_values, (list, tuple)) else required_values
+                if target in vals:
+                    return i
+        return None
+    finally:
+        wb.close()
+
+
 def parse_pos_excel(file_bytes: bytes, filename: str='') -> pd.DataFrame:
     xls = pd.ExcelFile(io.BytesIO(file_bytes))
     out=[]
@@ -36,12 +60,7 @@ def parse_pos_excel(file_bytes: bytes, filename: str='') -> pd.DataFrame:
         sn = sheet.strip().lower()
         if 'details_mada' not in sn and 'details_cc' not in sn:
             continue
-        raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet, header=None)
-        hdr = None
-        for i in range(min(15, len(raw))):
-            vals=[str(x).strip() for x in raw.iloc[i].tolist()]
-            if 'Merchant ID' in vals and 'Terminal ID' in vals and 'Transaction Amount' in vals:
-                hdr=i; break
+        hdr = _find_header_row(file_bytes, sheet, ['Merchant ID', 'Terminal ID', 'Transaction Amount'], 15)
         if hdr is None: continue
         df=pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet, header=hdr)
         df.columns=[str(c).strip() for c in df.columns]
@@ -64,6 +83,7 @@ def parse_pos_excel(file_bytes: bytes, filename: str='') -> pd.DataFrame:
         rows['net_pos_amount']=rows['gross_amount']-rows['reversal_amount']
         rows['dedupe_key']=rows.apply(lambda r: hashlib.sha1('|'.join(map(str,[r.retailer_id,r.terminal_id,r.transaction_date,r.get('posting_date'),round(r.gross_amount,2),r.scheme_group])).encode()).hexdigest(),axis=1)
         out.append(rows)
+        del df  # release the parsed sheet before moving to the next file/sheet
     return pd.concat(out, ignore_index=True) if out else pd.DataFrame()
 
 
@@ -90,10 +110,7 @@ def parse_bank_excel(file_bytes: bytes, filename: str='') -> tuple[pd.DataFrame,
     audit:   every bank statement line that was NOT included in credits, with a
              reason -- so nothing is silently discarded. Reviewable in the
              'Parser Audit' tab."""
-    raw=pd.read_excel(io.BytesIO(file_bytes), sheet_name=0, header=None)
-    hdr=None
-    for i in range(min(30,len(raw))):
-        if any(str(v).strip()==BANK_HEADER for v in raw.iloc[i].tolist()): hdr=i; break
+    hdr = _find_header_row(file_bytes, None, [BANK_HEADER], 30)
     if hdr is None: raise ValueError('Could not find ANB transaction header.')
     df=pd.read_excel(io.BytesIO(file_bytes), sheet_name=0, header=hdr)
     df.columns=[str(c).strip() for c in df.columns]
