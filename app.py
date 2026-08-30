@@ -1,16 +1,33 @@
 import io
+import time
+import uuid
 import pandas as pd
 import streamlit as st
 
 from engine import (parse_pos_excel, parse_bank_excel, parse_terminal_master, reconcile,
                      MasterFileError, DEFAULT_MAX_DATE_SHIFT, MAX_ALLOWED_DATE_SHIFT)
 
-APP_VERSION = "v1.2.2"
+APP_VERSION = "v1.2.3"
 MATCHED_STATUSES = ["Matched", "Late Settlement / Date Shift Match"]
+
+
+@st.cache_resource
+def _server_boot_info():
+    """Runs once per live server process (cached across reruns AND across browser
+    sessions hitting the same process), not once per script rerun. If two
+    screenshots taken minutes apart show a DIFFERENT boot id / boot time, the
+    browser reconnected to a different server process in between (e.g. a
+    redeploy restarted the container, or Render routed the request to a
+    different instance) -- a strong signal the browser tab's session went stale
+    without a full page reload. If the boot id stays the same, that's ruled out."""
+    return {"boot_id": uuid.uuid4().hex[:8], "boot_time": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())}
+
 
 st.set_page_config(page_title="SettlementRecon AI", page_icon="🏦", layout="wide")
 st.title("SettlementRecon AI")
 st.caption(f"Bank & POS Settlement Reconciliation • Monthly Finance Control • {APP_VERSION}")
+
+boot_info = _server_boot_info()
 
 with st.sidebar:
     st.header("Monthly Run")
@@ -40,6 +57,23 @@ terminal_file = st.file_uploader(
 bank_ready = bank_file is not None
 pos_ready = bool(pos_files) and len(pos_files) > 0
 files_ready = bank_ready and pos_ready
+
+with st.expander("🔧 Debug info (expand and screenshot this if uploads aren't registering)", expanded=False):
+    st.code(
+        f"Server boot id:     {boot_info['boot_id']}\n"
+        f"Server started at:  {boot_info['boot_time']}\n"
+        f"This render at:     {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n"
+        f"Streamlit version:  {st.__version__}\n"
+        f"\n"
+        f"bank_file:     {type(bank_file).__name__} -- {'None' if bank_file is None else bank_file.name}\n"
+        f"pos_files:     {type(pos_files).__name__} with {len(pos_files) if pos_files else 0} item(s)\n"
+        f"terminal_file: {type(terminal_file).__name__} -- {'None' if terminal_file is None else terminal_file.name}\n"
+        f"bank_ready={bank_ready}  pos_ready={pos_ready}  files_ready={files_ready}",
+        language="text",
+    )
+    st.caption("If 'Server boot id' differs across two screenshots taken close together, the browser "
+               "reconnected to a different/restarted server process between them -- reload the page "
+               "fully (not just click within it) to get a clean session.")
 
 # Live readout of what the backend has actually received -- the uploader widget shows
 # a filename the instant it's picked in the browser, before the upload to the server
@@ -126,6 +160,7 @@ if run_clicked:
                 "tm": tm, "mapping_review": mapping_review, "bank_audit": bank_audit,
                 "company": company, "month": month,
             }
+            # Remove any workbook cached from an earlier run.
             st.session_state.pop("excel_bytes", None)
             st.success("Monthly reconciliation completed successfully.")
 
@@ -219,7 +254,7 @@ if "run" in st.session_state:
         st.session_state["excel_bytes"] = excel_bytes
     else:
         excel_bytes = st.session_state["excel_bytes"]
-        _, date_summary, store_summary, ds = build_excel(run)
+        _, date_summary, store_summary, ds = build_excel(run)  # lightweight summaries for display only
 
     st.subheader("Reconciliation Results")
     c1, c2, c3, c4, c5 = st.columns(5)

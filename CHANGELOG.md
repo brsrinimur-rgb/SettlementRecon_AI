@@ -135,3 +135,61 @@ everywhere else in the file). Also added `.streamlit/config.toml` with
 on magic auto-display, so disabling it removes the whole class of bug for
 any future edit. Verified: app boots cleanly with magic disabled, and all
 12 regression tests still pass (engine.py untouched).
+
+## v1.2.2 (unblock a stuck "files required" state)
+
+Even a single 10.9KB terminal master file was showing as not received
+despite appearing in the uploader's file list — too small for a plausible
+upload-lag explanation on its own. The real risk: the Run button is
+`disabled=not files_ready`. A disabled button cannot be clicked, and
+clicking is normally what triggers Streamlit to rerun the script and
+re-read the uploaders' current state. If the automatic rerun that's
+supposed to fire when a background upload finishes is ever missed or
+delayed — a dropped websocket frame, several large simultaneous uploads,
+a proxy in front of the deployment buffering — the user is left with files
+visibly attached in the browser, status boxes stuck on "required," and a
+disabled Run button they can't click to re-check. No interaction on the
+page could get out of that state short of reloading and re-uploading
+everything.
+
+Added an always-enabled "🔄 Refresh upload status" button right below the
+status row. It does nothing but force a rerun, which re-reads the
+uploaders' actual current server-side state — the same effect a click on
+Run would have, just without the `disabled` gate blocking it. This doesn't
+fix whatever causes the missed rerun (that's Streamlit/deployment-level,
+outside this codebase), but it gives a one-click way out of the stuck state
+instead of a full page reload. Verified: app boots cleanly, all 12
+regression tests still pass (engine.py untouched).
+
+## v1.2.3 (diagnostics, since the refresh button alone didn't resolve it)
+
+After deploying v1.2.2, the Refresh button did NOT fix the stuck state —
+even a single, isolated 10.9KB terminal master file (no other uploads
+competing for bandwidth) stayed stuck on "required." That rules out simple
+upload lag as the sole explanation and pointed at something else, possibly
+a stale browser session surviving across a server redeploy (the browser
+tab reconnecting to a dead process, or Render routing to a different
+instance than the one the tab first connected to).
+
+Rather than keep guessing, added a debug panel directly in the UI so the
+next screenshot is self-diagnosing instead of requiring back-and-forth:
+
+- `🔧 Debug info` expander (collapsed by default, next to the upload
+  status boxes) showing:
+  - **Server boot id** and **boot time**, generated once via
+    `@st.cache_resource` — this value is stable across reruns and across
+    different browser sessions hitting the *same* live server process, but
+    changes if the container restarts or a request lands on a different
+    instance. Two screenshots taken minutes apart with different boot ids
+    proves the browser reconnected to a different process in between —
+    the tab needs a full reload, not just a click, to get a clean session.
+  - The current render timestamp and Streamlit version.
+  - The raw type and value Python actually received for `bank_file`,
+    `pos_files`, and `terminal_file` on this render, plus the computed
+    `bank_ready` / `pos_ready` / `files_ready` booleans — removes all
+    guesswork about what the server is actually seeing versus what the
+    browser widget displays.
+
+No behavior changed elsewhere. Verified: app boots cleanly with no
+duplicate-widget-ID conflicts, all 12 regression tests still pass
+(engine.py untouched).
