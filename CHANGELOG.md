@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.3.0 (consolidated rebuild)
+
+A clean consolidation of everything from v1.0 through v1.2.4 into one
+release, after extensive real-world deployment troubleshooting surfaced
+several environment-level gotchas (documented in README.md's "Known
+deployment gotchas" section) alongside the earlier code fixes. No engine
+or matching logic changed from v1.2.4 — this is a packaging/documentation
+consolidation plus a version bump, verified with a full re-run of the
+pipeline against real data and the full regression suite before release.
+
+Verified before tagging:
+- Full pipeline (parse POS -> parse bank -> parse master -> reconcile)
+  re-run against the real bank statement + POS export + terminal master:
+  734 recon rows, mapping_review correctly flags terminal 55610691.
+- All 12 regression tests pass.
+- App boots cleanly under `streamlit run app.py`.
+
 ## v1.1 (patch on top of v1.0 working base)
 
 Additive fixes only — no rewrite, no change to file layout, no change to the
