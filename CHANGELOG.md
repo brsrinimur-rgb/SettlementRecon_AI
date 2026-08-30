@@ -61,3 +61,77 @@ POS-detail source configured yet)`, `Unrecognized POS scheme code`, or
 File layout, `run_app.bat`, the overall tab structure (Dashboard through Raw
 Control), dedup logic, POS parsing, and the core date-shift matching
 algorithm are untouched from v1.0.
+
+## v1.2 (app.py corrected for actual v1.1 engine compatibility)
+
+A separately-drafted `app.py` was proposed for a GitHub/Render deployment.
+It was written against an older `engine.py` than what's actually in this
+repo, so applying it as-is would have broken the app on redeploy:
+
+- `bank = parse_bank_excel(...)` — v1.1's `parse_bank_excel()` returns a
+  `(credits, audit)` tuple, not a single DataFrame. The proposed file
+  assigned the tuple to `bank` then called `bank.empty` →
+  `AttributeError: 'tuple' object has no attribute 'empty'`. Verified by
+  running it against the real v1.1 `engine.py`.
+- `pos_clean, pagg, bank_sett, recon = reconcile(...)` — v1.1's
+  `reconcile()` returns 5 values (it added `mapping_review`). Unpacking
+  into 4 variables → `ValueError: too many values to unpack`. Also verified.
+- It checked `status.isin(["Matched", "Date Shift Match"])`, but v1.1
+  renamed that status to `"Late Settlement / Date Shift Match"` — had it
+  run, every date-shifted match would have silently counted as an
+  exception instead of a match, with no error to flag it.
+
+`app.py` has been corrected to actually match the v1.1 `engine.py` function
+signatures, while keeping the genuinely good parts of the proposed
+redesign:
+
+- Run button disabled until both bank file and POS files are received
+  (rather than clickable-then-error).
+- Live "N POS file(s) ready" / "Bank file ready" status row, so upload
+  completion is visible before you click Run — addresses the earlier race
+  condition between file-select and upload-complete on large multi-file
+  batches.
+- Full run state (including company/month and now also `mapping_review`
+  and `bank_audit`) cached in `st.session_state`, and the built Excel bytes
+  cached separately so re-rendering the page doesn't silently lose the
+  download or rebuild it from stale variables.
+- Download button available immediately after a successful run, and again
+  in a dedicated Export tab.
+- Whole-run try/except with `st.exception()` so a failure shows the real
+  traceback instead of a blank page.
+
+Everything from v1.1 is preserved: GC kept separate from CC (with a scheme
+totals table on the Dashboard tab as a standing contamination check),
+Parser Audit tab, Mapping Review tab, the 10-day default / 15-day max
+settlement shift window, and master-file validation. `engine.py` is
+unchanged from v1.1 — this was purely an `app.py` fix, verified against the
+real `engine.py` and the 12 existing regression tests (all still passing,
+since nothing in `engine.py` moved).
+
+## v1.2.1 (magic-write dump fixed)
+
+Deploying v1.2 to the browser showed raw `DeltaGenerator` object reprs
+(class docstring, method list, and all) dumped onto the page above the
+upload status boxes. Root cause: three status lines used a bare ternary as
+a statement, e.g.
+
+```python
+status_cols[0].success("Bank file ready") if bank_ready else status_cols[0].warning("Bank file required")
+```
+
+Streamlit's "magic" feature auto-wraps any bare top-level expression whose
+AST node isn't a plain `Call` in `st.write(...)`. A ternary's node type is
+`IfExp`, not `Call`, so even though both branches are ordinary Streamlit
+calls, magic wrapped the whole expression — executing the call (so the
+alert box did show) *and* additionally calling `st.write()` on its
+`DeltaGenerator` return value (the garbage repr). Every other line in the
+file is a plain `Call` statement and was never affected — confirmed by the
+screenshot only showing garbage above those three specific boxes.
+
+Fixed by converting all three to explicit `if/else` blocks, so each branch
+is its own plain `Call` statement (the same pattern already used correctly
+everywhere else in the file). Also added `.streamlit/config.toml` with
+`runner.magicEnabled = false` as a safety net — nothing in this app relies
+on magic auto-display, so disabling it removes the whole class of bug for
+any future edit. Verified: app boots cleanly with magic disabled, and all
+12 regression tests still pass (engine.py untouched).
