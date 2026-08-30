@@ -1,5 +1,51 @@
 # Changelog
 
+## v1.4.0 (POS batch accumulation -- free-tier workaround)
+
+Render's dashboard confirmed the root cause of the full-month crash:
+exit code 139 (a hard native-library crash), on the Free instance tier
+(0.1 CPU / 512MB RAM). Upgrading the Render plan would very likely fix
+this directly, but staying on the free tier was the preferred option, so
+this release works around the resource limit in the app itself instead.
+
+**The problem with naive batching:** matching requires the WHOLE month's
+POS data reconciled against the full bank statement in one pass. Running
+separate batches each against the full bank statement would flood every
+batch's results with false "Missing POS" exceptions for entries that are
+only present in a *different* batch.
+
+**The fix:** POS files are now uploaded and added in small groups. Each
+group is parsed and its rows appended to an accumulator in
+`st.session_state` immediately -- the raw file bytes for that group are
+then released (the uploader widget resets via a bumped key) before the
+next group is selected. Peak memory is now bounded by one batch's worth of
+raw files, not the whole month's, while the actual reconciliation still
+runs once, at the end, against the complete accumulated month -- so
+matching correctness is unaffected.
+
+New UI:
+- "POS Transaction Reports — add in small groups" section replaces the
+  old single multi-file uploader.
+- "➕ Add batch to month" parses the currently-selected files and adds
+  them to the running total, then clears the uploader for the next group.
+- A running summary shows total files/batches/rows added so far.
+- "🗑 Start new month (clear all batches)" resets everything, including
+  any completed run, for the next month's cycle.
+- Debug info and status boxes updated to reflect the accumulated total
+  rather than a single uploader's file count.
+
+Verified: simulated a 4-batch, 32-file accumulation against the real bank
+statement and terminal master -- produced byte-identical reconciliation
+output (734 recon rows, same status breakdown) to the old single-shot
+approach. All 12 regression tests still pass (engine.py unchanged --
+this was purely an app.py workflow change).
+
+Recommended batch size: 5-10 files per "Add batch" click. If a batch that
+size still fails, try smaller (e.g. 3-4) -- the free tier's exact ceiling
+wasn't pinned down precisely, only confirmed present at 32 files at once.
+
+# Changelog
+
 ## v1.3.0 (consolidated rebuild)
 
 A clean consolidation of everything from v1.0 through v1.2.4 into one

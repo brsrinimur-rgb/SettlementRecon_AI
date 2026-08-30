@@ -12,12 +12,17 @@ below so they don't need rediscovering.
 1. Extract the package.
 2. Double-click `run_app.bat`.
 3. Browser opens automatically.
-4. Upload the monthly ANB bank statement, all POS transaction reports, and
-   (optionally) the POS Terminal ID master.
-5. Click **Run Monthly Reconciliation**.
-6. Review Dashboard, Detailed Recon, Date-wise, Store-wise, Date + Store,
+4. Upload the monthly ANB bank statement.
+5. Under "POS Transaction Reports — add in small groups", select 5-10 POS
+   files at a time and click "➕ Add batch to month". Repeat until the
+   whole month's POS files have been added (check the running total shown).
+6. Optionally upload a POS Terminal ID master (a saved one is used by
+   default).
+7. Click **Run Monthly Reconciliation**.
+8. Review Dashboard, Detailed Recon, Date-wise, Store-wise, Date + Store,
    Exceptions, Mapping Review, and Parser Audit.
-7. Download the final Excel report.
+9. Download the final Excel report.
+10. Click "🗑 Start new month" before beginning the next month's cycle.
 
 ## Run anywhere (Render, other hosts)
 
@@ -109,8 +114,18 @@ look like the app "forgetting" everything and reverting to a fresh session.
 the repo root — a `config.toml` sitting at the top level of the repo is
 silently ignored by Streamlit.
 
-**5. Confirm what's actually deployed before debugging further.** The
-caption under the title (`... • v1.3.0`) is the single fastest way to
+**5. Free-tier hosting has real resource limits.** On Render's free tier
+(0.1 CPU / 512MB RAM), uploading a full month's POS files (30+) all at
+once caused the server process to crash outright (exit code 139 -- a hard
+native-library crash, visible in Render's Events log, not a normal Python
+exception the app could catch and display). Upgrading the Render plan
+would fix this directly, but if staying on the free tier: use the "add in
+small groups" POS batch workflow (v1.4.0+) -- upload and add 5-10 files at
+a time rather than all at once. This keeps peak memory bounded while still
+reconciling the complete month in one final pass.
+
+**6. Confirm what's actually deployed before debugging further.** The
+caption under the title (`... • v1.4.0`) is the single fastest way to
 confirm the live site is running the code you think it is, before spending
 time on any other diagnosis. If it doesn't match, the issue is in the
 deploy pipeline (branch, build cache, auto-deploy setting), not the code.

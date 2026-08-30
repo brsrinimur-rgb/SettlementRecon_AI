@@ -7,7 +7,7 @@ import streamlit as st
 from engine import (parse_pos_excel, parse_bank_excel, parse_terminal_master, reconcile,
                      MasterFileError, DEFAULT_MAX_DATE_SHIFT, MAX_ALLOWED_DATE_SHIFT)
 
-APP_VERSION = "v1.3.0"
+APP_VERSION = "v1.4.0"
 MATCHED_STATUSES = ["Matched", "Late Settlement / Date Shift Match"]
 
 
@@ -45,17 +45,84 @@ with st.sidebar:
 bank_file = st.file_uploader(
     "Bank Statement (ANB Excel)", type=["xlsx"], accept_multiple_files=False, key="bank_statement_upload",
 )
-pos_files = st.file_uploader(
-    "POS Transaction Reports (multiple Excel files)", type=["xlsx"], accept_multiple_files=True,
-    key="pos_files_upload",
+
+# --- POS batch accumulation ---------------------------------------------
+# The free-tier crash (Render exit 139, a hard native-library crash under
+# resource pressure) happened specifically when 32 POS files were held in
+# the uploader simultaneously. Matching still needs the WHOLE month's POS
+# data reconciled against the full bank statement in one pass -- splitting
+# into separate runs against the full bank statement would flood each run
+# with false "Missing POS" exceptions for entries only present in other
+# batches. So instead: upload POS files in small groups, parse+accumulate
+# each group immediately (keeping only the lightweight parsed rows, not
+# the raw file bytes) via st.session_state, then run reconciliation once
+# against the full accumulated total. This keeps peak memory bounded by
+# one batch's worth of raw files, not the whole month's.
+if "pos_batches" not in st.session_state:
+    st.session_state["pos_batches"] = []          # list of parsed DataFrames, one per added batch
+if "pos_batch_log" not in st.session_state:
+    st.session_state["pos_batch_log"] = []         # list of (filenames, row_count) for the summary display
+if "pos_uploader_key" not in st.session_state:
+    st.session_state["pos_uploader_key"] = 0        # bump this to force the uploader widget to reset
+
+st.subheader("POS Transaction Reports — add in small groups")
+st.caption("Upload 5-10 files at a time and click \"Add batch\" before adding more. This keeps memory "
+           "use low on the free hosting tier. The final run still reconciles the FULL month together.")
+
+pos_batch_files = st.file_uploader(
+    "Select a group of POS files", type=["xlsx"], accept_multiple_files=True,
+    key=f"pos_batch_upload_{st.session_state['pos_uploader_key']}",
 )
+
+col_add, col_clear = st.columns([3, 1])
+with col_add:
+    add_clicked = st.button(
+        f"➕ Add batch to month ({len(pos_batch_files) if pos_batch_files else 0} file(s) selected)",
+        disabled=not pos_batch_files, use_container_width=True,
+    )
+with col_clear:
+    clear_clicked = st.button("🗑 Start new month (clear all batches)", use_container_width=True)
+
+if clear_clicked:
+    st.session_state["pos_batches"] = []
+    st.session_state["pos_batch_log"] = []
+    st.session_state["pos_uploader_key"] += 1
+    st.session_state.pop("run", None)
+    st.session_state.pop("excel_bytes", None)
+    st.rerun()
+
+if add_clicked and pos_batch_files:
+    with st.spinner(f"Parsing {len(pos_batch_files)} file(s)..."):
+        added_names = []
+        added_rows = 0
+        for f in pos_batch_files:
+            x = parse_pos_excel(f.getvalue(), f.name)
+            if x is not None and not x.empty:
+                st.session_state["pos_batches"].append(x)
+                added_names.append(f.name)
+                added_rows += len(x)
+        st.session_state["pos_batch_log"].append((added_names, added_rows))
+    # Bump the uploader's key so it resets to empty for the next batch --
+    # this is what actually releases the just-uploaded files' raw bytes.
+    st.session_state["pos_uploader_key"] += 1
+    st.rerun()
+
+pos_total_rows = sum(len(df) for df in st.session_state["pos_batches"])
+pos_total_files = sum(len(names) for names, _ in st.session_state["pos_batch_log"])
+
+if st.session_state["pos_batch_log"]:
+    with st.expander(f"📦 {pos_total_files} POS file(s) added across {len(st.session_state['pos_batch_log'])} "
+                      f"batch(es) -- {pos_total_rows:,} transaction rows total", expanded=False):
+        for i, (names, rows) in enumerate(st.session_state["pos_batch_log"], start=1):
+            st.write(f"Batch {i}: {', '.join(names)} -- {rows:,} rows")
+
 terminal_file = st.file_uploader(
     "POS Terminal ID Master (optional — saved master is included)", type=["xlsx"], accept_multiple_files=False,
     key="terminal_master_upload",
 )
 
 bank_ready = bank_file is not None
-pos_ready = bool(pos_files) and len(pos_files) > 0
+pos_ready = len(st.session_state["pos_batches"]) > 0
 files_ready = bank_ready and pos_ready
 
 with st.expander("🔧 Debug info (expand and screenshot this if uploads aren't registering)", expanded=False):
@@ -65,9 +132,9 @@ with st.expander("🔧 Debug info (expand and screenshot this if uploads aren't 
         f"This render at:     {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n"
         f"Streamlit version:  {st.__version__}\n"
         f"\n"
-        f"bank_file:     {type(bank_file).__name__} -- {'None' if bank_file is None else bank_file.name}\n"
-        f"pos_files:     {type(pos_files).__name__} with {len(pos_files) if pos_files else 0} item(s)\n"
-        f"terminal_file: {type(terminal_file).__name__} -- {'None' if terminal_file is None else terminal_file.name}\n"
+        f"bank_file:         {type(bank_file).__name__} -- {'None' if bank_file is None else bank_file.name}\n"
+        f"pos_batches added: {len(st.session_state['pos_batches'])} batch(es), {pos_total_rows} row(s) total\n"
+        f"terminal_file:     {type(terminal_file).__name__} -- {'None' if terminal_file is None else terminal_file.name}\n"
         f"bank_ready={bank_ready}  pos_ready={pos_ready}  files_ready={files_ready}",
         language="text",
     )
@@ -77,8 +144,7 @@ with st.expander("🔧 Debug info (expand and screenshot this if uploads aren't 
 
 # Live readout of what the backend has actually received -- the uploader widget shows
 # a filename the instant it's picked in the browser, before the upload to the server
-# finishes. With many files (a daily POS export per day of the month) that gap is
-# real; this makes the true received state visible instead of trusting the widget.
+# finishes. This makes the true received state visible instead of trusting the widget.
 status_cols = st.columns(3)
 if bank_ready:
     status_cols[0].success("Bank file ready")
@@ -86,9 +152,9 @@ else:
     status_cols[0].warning("Bank file required")
 
 if pos_ready:
-    status_cols[1].success(f"{len(pos_files)} POS file(s) ready")
+    status_cols[1].success(f"{pos_total_files} POS file(s) ready ({pos_total_rows:,} rows)")
 else:
-    status_cols[1].warning("POS files required")
+    status_cols[1].warning("Add at least one POS batch")
 
 if terminal_file is not None:
     status_cols[2].info("Terminal master uploaded")
@@ -111,21 +177,16 @@ run_clicked = st.button(
     "Run Monthly Reconciliation", type="primary", use_container_width=True, disabled=not files_ready,
 )
 if not files_ready:
-    st.info("Upload one ANB bank statement and at least one POS transaction report. "
+    st.info("Upload the bank statement, then add at least one POS batch above. "
             "The Run button will then become available.")
 
 if run_clicked:
     try:
         with st.spinner("Processing monthly files..."):
-            pos_parts = []
-            for f in pos_files:
-                x = parse_pos_excel(f.getvalue(), f.name)
-                if x is not None and not x.empty:
-                    pos_parts.append(x)
-            if not pos_parts:
-                st.error("No valid POS transaction rows were found in the uploaded POS files.")
+            if not st.session_state["pos_batches"]:
+                st.error("No POS batches have been added yet.")
                 st.stop()
-            pos = pd.concat(pos_parts, ignore_index=True)
+            pos = pd.concat(st.session_state["pos_batches"], ignore_index=True)
 
             bank, bank_audit = parse_bank_excel(bank_file.getvalue(), bank_file.name)
             if bank is None or bank.empty:
